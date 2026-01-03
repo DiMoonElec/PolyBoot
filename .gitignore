@@ -1,3 +1,9 @@
+**/keys/
+**/datasheets/
+**/tmp/
+**/.vscode/
+
+
 # Compiled binaries
 *.o
 *.bin

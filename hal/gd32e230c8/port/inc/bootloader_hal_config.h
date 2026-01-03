@@ -1,0 +1,6 @@
+#ifndef __BOOTLOADER_HAL_CONFIG_H__
+#define __BOOTLOADER_HAL_CONFIG_H__
+
+#define BOOTLOADER_FLASH_SECTOR_SIZE 0x400
+
+#endif
