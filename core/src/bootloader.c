@@ -17,6 +17,9 @@
 
 #define BUFFER_EXCH_SIZE 256
 
+#define CHUNK_DATA_SIZE 128
+#define MAC_SIZE 16
+
 /******************************************************************************/
 
 #define CMD_ACTIVATE 0x70
@@ -56,8 +59,6 @@ enum
 
 #pragma pack(push, 1)
 
-#define CHUNK_DATA_SIZE 128
-
 struct fw_chunk_s
 {
   uint32_t address;  // AAD
@@ -73,6 +74,7 @@ struct fw_chunk_s
 
 static uint8_t state, _state;
 static uint8_t flag_activated;
+static uint8_t flag_firmware_valid;
 static uint8_t flag_begin;
 static uint32_t adr_counter;
 static uint32_t timer;
@@ -92,7 +94,33 @@ static const uint8_t activate_data[] = {'A', 'C', 'T', 'I', 'V', 'A', 'T', 'E'};
 
 /******************************************************************************/
 
-#define MAC_SIZE 16
+/*
+  Сравнение двух участков памяти
+  Возвращает:
+    1 - участки хранят одинаковые данные
+    0 - данные различаются
+*/
+static uint8_t __memcompare(const uint8_t *dest, const uint8_t *source, int len)
+{
+  for (int i = 0; i < len; i++)
+  {
+    if (dest[i] != source[i])
+      return 0;
+  }
+
+  return 1;
+}
+
+static uint8_t __check_activation_signature(const uint8_t *sgnt)
+{
+  for (int i = 0; i < sizeof(activate_data); i++)
+  {
+    if (sgnt[i] != activate_data[i])
+      return 1;
+  }
+
+  return 0;
+}
 
 static uint8_t __app_poly1305_check(void)
 {
@@ -131,12 +159,12 @@ static int __decrypt_and_verify_chunk(
   /* len */
   aad[4] = chunk->len;
 
-  /* Проверка и расшифровка */
+  /* Проверка и расшифровка, используется XChaCha20-Poly1305*/
   int ret = crypto_aead_unlock(
       plaintext,        // out: расшифрованные данные
       chunk->tag,       // MAC
       key,              // ключ
-      chunk->nonce,     // nonce (12 байт)
+      chunk->nonce,     // nonce (24 байт)
       aad, sizeof(aad), // AAD
       chunk->ciphertext,
       CHUNK_DATA_SIZE);
@@ -177,6 +205,20 @@ static uint8_t __decrypt_chunk(void)
   /* Если мы здесь — данные подлинные */
   DataLen = chunk->len;
   DataAddress = chunk->address;
+
+  /* Проверяем корректность DataLen и DataAddress */
+  if (DataLen > CHUNK_DATA_SIZE)
+  {
+    return 1;
+  }
+
+  if ((DataAddress < BOOTLOADER_APP_BEGIN) ||
+      ((DataAddress + DataLen) > (BOOTLOADER_APP_BEGIN + BOOTLOADER_APP_LENGTH)))
+  {
+    return 1;
+  }
+
+  /* Если попали сюда, то все ОК */
   flag_DataIsSet = 1;
 
   return 0;
@@ -208,14 +250,12 @@ static void __parsecmd(void)
     }
 
     // Проверяем сигнатуру
-    for (int i = 0; i < sizeof(activate_data); i++)
+    if (__check_activation_signature(buffer_exch + 1))
     {
-      if (buffer_exch[i + 1] != activate_data[i])
-      {
-        state = STATE_MAIN;
-        break;
-      }
+      state = STATE_MAIN;
+      break;
     }
+
     // Если попали сюда, то все ОК
     flag_activated = 1;
 
@@ -257,7 +297,7 @@ static void __parsecmd(void)
       break;
     }
 
-    if (len != 174)
+    if (len != (1 + sizeof(struct fw_chunk_s)))
     {
       state = STATE_MAIN;
       break;
@@ -286,16 +326,27 @@ static void __parsecmd(void)
 
     if ((flag_begin == 0) || (flag_DataIsSet == 0))
     {
-      buffer_exch[0] = 0x02;
+      buffer_exch[1] = 0x02;
       binex_transmitter_init(buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
-
-    if (port_write_chunk(Data, DataAddress, DataLen) != 0)
-      buffer_exch[1] = 0x01; // ошибка расшифровки
+    
+    if (__memcompare((const uint8_t *)DataAddress, Data, DataLen))
+    {
+      // Если участки памяти совпадают,
+      // то просто возвращаем ОК
+      // без повторной записи данных
+      buffer_exch[1] = 0x00; // ОК
+    }
+    else if (port_write_chunk(Data, DataAddress, DataLen) != 0)
+    {
+      buffer_exch[1] = 0x01; // ошибка записи
+    }
     else
+    {
       buffer_exch[1] = 0x00; // иначе ОК
+    }
 
     binex_transmitter_init(buffer_exch, 2);
     state = STATE_SEND_RESP;
@@ -323,11 +374,23 @@ static void __parsecmd(void)
     }
 
     buffer_exch[0] = CMD_CHECK_CRC;
-    // if (__app_crc_check() != 0)
-    if (__app_poly1305_check() != 0)
+
+    if (flag_begin)
+    {
+      // В этом состоянии нельзя выполнять это действие,
+      // сначала надо до конца записать прошивку
+      buffer_exch[1] = 0x02;
+    }
+    else if (__app_poly1305_check() != 0)
+    {
+      flag_firmware_valid = 0;
       buffer_exch[1] = 0x01; // ошибка расшифровки
+    }
     else
+    {
+      flag_firmware_valid = 1;
       buffer_exch[1] = 0x00; // иначе ОК
+    }
 
     binex_transmitter_init(buffer_exch, 2);
     state = STATE_SEND_RESP;
@@ -341,9 +404,19 @@ static void __parsecmd(void)
     }
 
     buffer_exch[0] = CMD_APP_RUN;
-    // if (__app_crc_check() != 0) // Если основная прошивка отсутствует, либо повреждена
-    if (__app_poly1305_check() != 0)
+
+    if (flag_begin)
     {
+      // В этом состоянии нельзя выполнять это действие,
+      // сначала надо до конца записать прошивку
+      buffer_exch[1] = 0x02;
+      binex_transmitter_init(buffer_exch, 2);
+      state = STATE_SEND_RESP;
+      break;
+    }
+    else if (__app_poly1305_check() != 0) // Если основная прошивка отсутствует, либо повреждена
+    {
+      flag_firmware_valid = 0;
       buffer_exch[1] = 0x01;
       binex_transmitter_init(buffer_exch, 2);
       state = STATE_SEND_RESP;
@@ -371,7 +444,19 @@ void InitBootloader(void)
   flag_DataIsSet = 0;
 
   flag_activated = 0;
-  
+
+#if !defined(BOOTLOADER_DBG_MODE)
+  // Если не ноль, то приложение не прошло
+  // проверку целостности
+  if (__app_poly1305_check())
+    flag_firmware_valid = 0;
+  else
+    flag_firmware_valid = 1;
+#else
+  // В отладочной сборке проверку целостности не проводим
+  flag_firmware_valid = 1;
+#endif
+
 #ifdef BOOTLOADER_TIMEOUT_MS
   boot_timer = SYSTICK_GET_VALUE();
 #else
@@ -401,34 +486,18 @@ void ProcessBootloader(void)
     if (binex_receiver(port_serial_getc()) == BINEX_PACK_RX)
       __parsecmd();
 
-#ifdef BOOTLOADER_TIMEOUT_MS /* Если Bootloader активируется по тайм-ауту */
-    if ((flag_activated == 0) && ((SYSTICK_GET_VALUE() - boot_timer) >= BOOTLOADER_TIMEOUT_MS))
+#ifdef BOOTLOADER_TIMEOUT_MS                                              /* Если Bootloader активируется по тайм-ауту */
+    if ((!flag_activated)                                                 // Если Bootloader не был активирован командой
+        && (flag_firmware_valid)                                          // и прошивка прошла проверку целостности
+        && ((SYSTICK_GET_VALUE() - boot_timer) >= BOOTLOADER_TIMEOUT_MS)) // и истек таймаут
     {
-#ifndef BOOTLOADER_DBG_MODE
-      if (__app_poly1305_check() != 0)
-      {
-        // Если основная прошивка отсутствует, либо повреждена,
-        // то переводим загружчик в активное состояние
-        flag_activated = 1;
-        break;
-      }
-#endif
       // Запускаем основную прошивку
       __app_run();
     }
 #else /* Иначе, Bootloader активируется по внешнему сигналу */
     // Если загрузчик не переведен в активное состояние
-    if (flag_activated == 0)
+    if ((!flag_activated) && (flag_firmware_valid))
     {
-#ifndef BOOTLOADER_DBG_MODE
-      if (__app_poly1305_check() != 0)
-      {
-        // Если основная прошивка отсутствует, либо повреждена,
-        // то переводим загружчик в активное состояние
-        flag_activated = 1;
-        break;
-      }
-#endif
       // Запускаем основную прошивку
       __app_run();
     }
@@ -438,6 +507,7 @@ void ProcessBootloader(void)
   /*********************************************/
   case STATE_BEGIN:
   {
+    flag_firmware_valid = 0;
     adr_counter = BOOTLOADER_APP_BEGIN;
     state = STATE_FLASH_CLEAR;
   }
