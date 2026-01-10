@@ -85,12 +85,17 @@ static uint32_t boot_timer;
 
 static uint8_t buffer_exch[BUFFER_EXCH_SIZE];
 
-static uint8_t Data[128];      // Буфер, в котором содержится расшифрованный кусок прошивки
+static uint8_t Data[CHUNK_DATA_SIZE]; // Буфер, в котором содержится расшифрованный кусок прошивки
+
 static uint8_t DataLen;        // Размер полезных данных в Data
 static uint32_t DataAddress;   // Смещение во flash, начиная с которого необходимо записать Data
 static uint8_t flag_DataIsSet; // Флаг наличия полезных данных в буфере Data
 
+/* Строковая константа активации загрузчика */
 static const uint8_t activate_data[] = {'A', 'C', 'T', 'I', 'V', 'A', 'T', 'E'};
+
+/* Ожидаемая строка устройства */
+static const uint8_t expected_device_id[CHUNK_DATA_SIZE] = BOOTLOADER_DEVICE_ID_STRING;
 
 /******************************************************************************/
 
@@ -182,6 +187,49 @@ static int __decrypt_and_verify_chunk(
   return 0;
 }
 
+/*
+  Проверка идентификационного чанка устройства
+  Возвращает:
+    1 - проверка не прошла
+    0 - проверка прошла, все ОК
+*/
+static uint8_t __check_identity_chunk(void)
+{
+  const struct fw_chunk_s *chunk =
+      (const struct fw_chunk_s *)(buffer_exch + 1);
+
+  /*
+    Логическая проверка
+      len всегда должно быть равно CHUNK_DATA_SIZE
+    address - в данном конексте хранит общий
+      ожидаемый размер приложения,
+      значение должно быть равно BOOTLOADER_APP_LENGTH
+  */
+  if ((chunk->len != CHUNK_DATA_SIZE) ||
+      (chunk->address != BOOTLOADER_APP_LENGTH))
+  {
+    return 1;
+  }
+
+  /* Расшифровка + аутентификация */
+  if (__decrypt_and_verify_chunk(
+          EncryptionKey,
+          chunk,
+          Data) != 0)
+  {
+    return 1; // MAC / decrypt error
+  }
+
+  /* Сравнение идентификационной строки */
+  if (__memcompare(Data, expected_device_id, CHUNK_DATA_SIZE) == 0)
+  {
+    return 1; // не тот девайс
+  }
+
+  /* Всё ОК */
+  return 0;
+}
+
 static uint8_t __decrypt_chunk(void)
 {
   flag_DataIsSet = 0;
@@ -269,9 +317,35 @@ static void __parsecmd(void)
     break;
   /////////////////////////////////////////
   case CMD_BEGIN:
+    /*
+      Команда BEGIN, в качестве быстрой проверки перед destructive-op,
+      принимает идентификационный чанк файла обновления, и выполняет его валидацию.
+      Если валидация завершилась успешно, то можно сделать косвенный вывод,
+      что пользователь не перепутал файл обновления, и
+      это файл обновления именно для данного изделия, и дальнейший процесс
+      приема прошивки скорее всего завершится успешно.
+      Это является защитой от невнимательности и "кривых рук", 
+      позволяющая не оставить пользователя с окирпиченным девайсом 
+      в самый неподходящий момент времени.
+    */
     if (flag_activated == 0)
     {
       state = STATE_MAIN;
+      break;
+    }
+
+    if (len != (1 + sizeof(struct fw_chunk_s)))
+    {
+      state = STATE_MAIN;
+      break;
+    }
+
+    if (__check_identity_chunk() != 0)
+    {
+      buffer_exch[0] = CMD_BEGIN;
+      buffer_exch[1] = 0x02;
+      binex_transmitter_init(buffer_exch, 2);
+      state = STATE_SEND_RESP;
       break;
     }
 
@@ -331,7 +405,7 @@ static void __parsecmd(void)
       state = STATE_SEND_RESP;
       break;
     }
-    
+
     if (__memcompare((const uint8_t *)DataAddress, Data, DataLen))
     {
       // Если участки памяти совпадают,
@@ -519,6 +593,7 @@ void ProcessBootloader(void)
     if (adr_counter >= (BOOTLOADER_APP_BEGIN + BOOTLOADER_APP_LENGTH))
     {
       flag_begin = 1;
+      flag_DataIsSet = 0;
 
       // Возвращаем OK
       buffer_exch[0] = CMD_BEGIN;
