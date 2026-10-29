@@ -5,6 +5,9 @@
 #define BOOTLOADER_RESPONSE_DELAY_MS 20
 #define BOOTLOADER_TIMEOUT_MS 10000
 
+/* Отвечать ОК на команду запуска приложения, оставаясь в загрузчике. */
+//#define BOOTLOADER_DISABLE_APP_RUN_CMD
+
 /* Загрузчик занимает первые 12 Кбайт Flash. */
 #define BOOTLOADER_APP_BEGIN 0x08003000UL
 #define BOOTLOADER_APP_LENGTH (116UL * 1024UL)

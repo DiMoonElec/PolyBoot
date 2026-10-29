@@ -479,6 +479,7 @@ static void __parsecmd(void)
 
     buffer_exch[0] = CMD_APP_RUN;
 
+#ifndef BOOTLOADER_DISABLE_APP_RUN_CMD
     if (flag_begin)
     {
       // В этом состоянии нельзя выполнять это действие,
@@ -497,10 +498,16 @@ static void __parsecmd(void)
       break;
     }
 
-    // Отправляем ответ, после чего запускаем прошивку
+#endif
+
+    // Отправляем ответ на команду запуска приложения
     buffer_exch[1] = 0x00;
     binex_transmitter_init(buffer_exch, 2);
+#ifdef BOOTLOADER_DISABLE_APP_RUN_CMD
+    state = STATE_SEND_RESP;
+#else
     state = STATE_APP_RUN;
+#endif
     break;
   }
 }

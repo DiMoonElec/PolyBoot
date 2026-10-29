@@ -6,6 +6,9 @@
 
 #define BOOTLOADER_TIMEOUT_MS 5000
 
+/* Отвечать ОК на команду запуска приложения, оставаясь в загрузчике. */
+//#define BOOTLOADER_DISABLE_APP_RUN_CMD
+
 //#define BOOTLOADER_USE_USER_DATA
 
 #define BOOTLOADER_APP_BEGIN   0x08003000UL
