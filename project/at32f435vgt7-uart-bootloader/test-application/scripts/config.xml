@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FirmwareConfig>
+  <EncryptionKey>0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF</EncryptionKey>
+  <IntegrityKey>0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF</IntegrityKey>
+  <FlashStartAddress>0x08003000</FlashStartAddress>
+  <FlashSize>1034240</FlashSize>
+  <DeviceID>at32f435vgt7-uart-bootloader</DeviceID>
+</FirmwareConfig>
