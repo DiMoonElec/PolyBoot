@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UpdatePackage SchemaVersion="1" Format="2" Type="COMPLEX">
+  <Output>at32f435vgt7-proxy-complex.xbin</Output>
+  <MinUpdaterVersion>0.0.0</MinUpdaterVersion>
+  <Firmware Target="ROOT">
+    <DeviceId>at32f435vgt7-proxy-bootloader</DeviceId>
+    <BootloaderVersion>2</BootloaderVersion>
+    <ProxyVersion>1</ProxyVersion>
+    <Binary>../Debug/Exe/at32f435vgt7-proxy-blink.bin</Binary>
+    <VersionHeader>../firmware_version.h</VersionHeader>
+    <Memory>
+      <AppBegin>0x08004000</AppBegin>
+      <AppLength>1006K</AppLength>
+    </Memory>
+    <Keys>
+      <EncryptionKey>0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF</EncryptionKey>
+      <IntegrityKey>0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF</IntegrityKey>
+    </Keys>
+  </Firmware>
+  <Firmware Target="SLAVE">
+    <DeviceId>at32f413cbt7-uart-bootloader</DeviceId>
+    <BootloaderVersion>2</BootloaderVersion>
+    <Binary>at32f413cbt7-blink.bin</Binary>
+    <VersionHeader>slave_firmware_version.h</VersionHeader>
+    <Memory>
+      <AppBegin>0x08003000</AppBegin>
+      <AppLength>116K</AppLength>
+    </Memory>
+    <Keys>
+      <EncryptionKey>0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF</EncryptionKey>
+      <IntegrityKey>0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF</IntegrityKey>
+    </Keys>
+  </Firmware>
+</UpdatePackage>

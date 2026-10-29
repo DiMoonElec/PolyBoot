@@ -9,17 +9,25 @@
 #include "bootloader_hal_config.h"
 #include "bootloader_project_config.h"
 
+#ifdef BOOTLOADER_USE_PROXY
+#include "bootloader_proxy.h"
+#endif
+
 /******************************************************************************/
 
 #include "private_keys.inc"
 
 /******************************************************************************/
 
+#ifdef BOOTLOADER_USE_PROXY
+#define BUFFER_EXCH_SIZE 512
+#else
 #define BUFFER_EXCH_SIZE 256
+#endif
 
 #define CHUNK_DATA_SIZE 128
 #define MAC_SIZE 16
-#define FIRMWARE_VERSION_SIZE 6
+#define FIRMWARE_HASH_SIZE 16
 #define DEVICE_ID_SIZE 32
 
 /******************************************************************************/
@@ -32,7 +40,7 @@
 #define CMD_CHECK_CRC 0x75
 #define CMD_APP_RUN 0x76
 #define CMD_ERASE_USER_DATA 0x78
-#define CMD_GET_FIRMWARE_VERSION 0x79
+#define CMD_GET_FIRMWARE_HASH 0x79
 #define CMD_GET_DEVICE_ID 0x7A
 
 /******************************************************************************/
@@ -58,6 +66,10 @@ enum
   STATE_SEND_RESP,
   STATE_SEND_RESP_1,
 
+#ifdef BOOTLOADER_USE_PROXY
+  STATE_PROXY_SEND,
+#endif
+
   NUM_STATES
 };
 
@@ -75,6 +87,9 @@ struct fw_chunk_s
 #pragma pack(pop)
 
 /******************************************************************************/
+
+static int bootloader_tx_callback(uint8_t c);
+static Binex_t binex;
 
 static uint8_t state, _state;
 static uint8_t flag_activated;
@@ -282,18 +297,31 @@ static uint8_t __decrypt_chunk(void)
 
 static void __app_run(void)
 {
+#ifdef BOOTLOADER_USE_PROXY
+  BootloaderProxyDeinit();
+#endif
   port_deinit_all();
   port_application_run();
 }
 
 static void __parsecmd(void)
 {
-  uint16_t len = binex_get_rxpack_len();
+  uint16_t len = binex_get_rxpack_len(&binex);
   if (len == 0)
   {
     state = STATE_MAIN;
     return;
   }
+
+#ifdef BOOTLOADER_USE_PROXY
+  if (BootloaderProxyIsCommand(buffer_exch[0]))
+  {
+    if (flag_activated)
+      BootloaderProxyRequest(buffer_exch, len);
+    state = STATE_MAIN;
+    return;
+  }
+#endif
 
   switch (buffer_exch[0])
   {
@@ -320,7 +348,7 @@ static void __parsecmd(void)
     buffer_exch[1] = 0x00;
 
     // Инициализируем передатчик
-    binex_transmitter_init(buffer_exch, 2);
+    binex_transmitter_init(&binex, buffer_exch, 2);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
@@ -352,7 +380,7 @@ static void __parsecmd(void)
     {
       buffer_exch[0] = CMD_BEGIN;
       buffer_exch[1] = 0x02;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
@@ -393,7 +421,7 @@ static void __parsecmd(void)
     else
       buffer_exch[1] = 0x00; // иначе ОК
 
-    binex_transmitter_init(buffer_exch, 2);
+    binex_transmitter_init(&binex, buffer_exch, 2);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
@@ -409,7 +437,7 @@ static void __parsecmd(void)
     if ((flag_begin == 0) || (flag_DataIsSet == 0))
     {
       buffer_exch[1] = 0x02;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
@@ -430,7 +458,7 @@ static void __parsecmd(void)
       buffer_exch[1] = 0x00; // иначе ОК
     }
 
-    binex_transmitter_init(buffer_exch, 2);
+    binex_transmitter_init(&binex, buffer_exch, 2);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
@@ -444,7 +472,7 @@ static void __parsecmd(void)
     flag_begin = 0;
     buffer_exch[0] = CMD_END;
     buffer_exch[1] = 0x00;
-    binex_transmitter_init(buffer_exch, 2);
+    binex_transmitter_init(&binex, buffer_exch, 2);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
@@ -474,36 +502,36 @@ static void __parsecmd(void)
       buffer_exch[1] = 0x00; // иначе ОК
     }
 
-    binex_transmitter_init(buffer_exch, 2);
+    binex_transmitter_init(&binex, buffer_exch, 2);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
-  case CMD_GET_FIRMWARE_VERSION:
+  case CMD_GET_FIRMWARE_HASH:
     if ((flag_activated == 0) || (len != 1))
     {
       state = STATE_MAIN;
       break;
     }
 
-    buffer_exch[0] = CMD_GET_FIRMWARE_VERSION;
+    buffer_exch[0] = CMD_GET_FIRMWARE_HASH;
 
-    /* Перед каждым ответом проверяем весь образ, включая поле версии. */
+    /* Перед каждым ответом проверяем весь образ, включая хэш бинарника. */
     if (__app_poly1305_check() != 0)
     {
       flag_firmware_valid = 0;
       buffer_exch[1] = 0x01;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
     }
     else
     {
-      /* Три uint16 LE хранятся непосредственно перед MAC. */
-      const uint8_t *version = (const uint8_t *)(
-          BOOTLOADER_APP_BEGIN + BOOTLOADER_APP_LENGTH - MAC_SIZE - FIRMWARE_VERSION_SIZE);
+      /* Хэш исходного бинарника хранится непосредственно перед MAC. */
+      const uint8_t *firmware_hash = (const uint8_t *)(
+          BOOTLOADER_APP_BEGIN + BOOTLOADER_APP_LENGTH - MAC_SIZE - FIRMWARE_HASH_SIZE);
 
       flag_firmware_valid = 1;
       buffer_exch[1] = 0x00;
-      memcpy(buffer_exch + 2, version, FIRMWARE_VERSION_SIZE);
-      binex_transmitter_init(buffer_exch, 2 + FIRMWARE_VERSION_SIZE);
+      memcpy(buffer_exch + 2, firmware_hash, FIRMWARE_HASH_SIZE);
+      binex_transmitter_init(&binex, buffer_exch, 2 + FIRMWARE_HASH_SIZE);
     }
 
     state = STATE_SEND_RESP;
@@ -519,7 +547,7 @@ static void __parsecmd(void)
     buffer_exch[0] = CMD_GET_DEVICE_ID;
     buffer_exch[1] = 0x00;
     memcpy(buffer_exch + 2, expected_device_id, DEVICE_ID_SIZE);
-    binex_transmitter_init(buffer_exch, 2 + DEVICE_ID_SIZE);
+    binex_transmitter_init(&binex, buffer_exch, 2 + DEVICE_ID_SIZE);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
@@ -538,7 +566,7 @@ static void __parsecmd(void)
       // В этом состоянии нельзя выполнять это действие,
       // сначала надо до конца записать прошивку
       buffer_exch[1] = 0x02;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
@@ -546,7 +574,7 @@ static void __parsecmd(void)
     {
       flag_firmware_valid = 0;
       buffer_exch[1] = 0x01;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
@@ -555,7 +583,7 @@ static void __parsecmd(void)
 
     // Отправляем ответ на команду запуска приложения
     buffer_exch[1] = 0x00;
-    binex_transmitter_init(buffer_exch, 2);
+    binex_transmitter_init(&binex, buffer_exch, 2);
 #ifdef BOOTLOADER_DISABLE_APP_RUN_CMD
     state = STATE_SEND_RESP;
 #else
@@ -570,6 +598,10 @@ static void __parsecmd(void)
 void InitBootloader(void)
 {
   Crc16Init();
+  binex_init(&binex, bootloader_tx_callback);
+#ifdef BOOTLOADER_USE_PROXY
+  BootloaderProxyInit();
+#endif
 
   state = STATE_MAIN;
   _state = state + 1;
@@ -601,6 +633,9 @@ void InitBootloader(void)
 
 void ProcessBootloader(void)
 {
+#ifdef BOOTLOADER_USE_PROXY
+  BootloaderProxyProcess();
+#endif
   uint8_t entry = 0;
   if (_state != state)
   {
@@ -612,12 +647,26 @@ void ProcessBootloader(void)
   {
   /*********************************************/
   case STATE_MAIN:
-    binex_receiver_begin(buffer_exch, BUFFER_EXCH_SIZE);
+    binex_receiver_begin(&binex, buffer_exch, BUFFER_EXCH_SIZE);
     state = STATE_RX_WAIT;
     break;
   /*********************************************/
   case STATE_RX_WAIT:
-    if (binex_receiver(port_serial_getc()) == BINEX_PACK_RX)
+#ifdef BOOTLOADER_USE_PROXY
+  {
+    uint8_t *payload;
+    uint16_t length = BootloaderProxyGetResponse(&payload);
+    if (length != 0)
+    {
+      /* Прокси-ответы отправляются без дополнительной задержки.
+         Состояние приёмника ПК сохраняется до окончания передачи. */
+      binex_transmitter_init(&binex, payload, length);
+      state = STATE_PROXY_SEND;
+      break;
+    }
+  }
+#endif
+    if (binex_receiver(&binex, port_serial_getc()) == BINEX_PACK_RX)
       __parsecmd();
 
 #ifdef BOOTLOADER_TIMEOUT_MS                                              /* Если Bootloader активируется по тайм-ауту */
@@ -658,7 +707,7 @@ void ProcessBootloader(void)
       // Возвращаем OK
       buffer_exch[0] = CMD_BEGIN;
       buffer_exch[1] = 0x00;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
@@ -676,7 +725,7 @@ void ProcessBootloader(void)
         buffer_exch[0] = CMD_BEGIN;
         buffer_exch[1] = 0x01;
         UInt32ToBuff(buffer_exch + 2, block);
-        binex_transmitter_init(buffer_exch, 6);
+        binex_transmitter_init(&binex, buffer_exch, 6);
         state = STATE_SEND_RESP;
         break;
       }
@@ -689,13 +738,13 @@ void ProcessBootloader(void)
     buffer_exch[1] = 0xFF;
     UInt32ToBuff(buffer_exch + 2, BOOTLOADER_APP_LENGTH / BOOTLOADER_FLASH_SECTOR_SIZE);
     UInt32ToBuff(buffer_exch + 6, block);
-    binex_transmitter_init(buffer_exch, 10);
+    binex_transmitter_init(&binex, buffer_exch, 10);
     state = STATE_SEND_EVENT_FLASH_CLEAR;
   }
   break;
     /*********************************************/
   case STATE_SEND_EVENT_FLASH_CLEAR:
-    if (binex_transmit() == BINEX_PACK_TX)
+    if (binex_transmit(&binex) == BINEX_PACK_TX)
       state = STATE_SEND_EVENT_FLASH_CLEAR_1;
     break;
   /*********************************************/
@@ -722,7 +771,7 @@ void ProcessBootloader(void)
       // Возвращаем OK
       buffer_exch[0] = CMD_ERASE_USER_DATA;
       buffer_exch[1] = 0x00;
-      binex_transmitter_init(buffer_exch, 2);
+      binex_transmitter_init(&binex, buffer_exch, 2);
       state = STATE_SEND_RESP;
       break;
     }
@@ -740,7 +789,7 @@ void ProcessBootloader(void)
         buffer_exch[0] = CMD_ERASE_USER_DATA;
         buffer_exch[1] = 0x01;
         UInt32ToBuff(buffer_exch + 2, block);
-        binex_transmitter_init(buffer_exch, 6);
+        binex_transmitter_init(&binex, buffer_exch, 6);
         state = STATE_SEND_RESP;
         break;
       }
@@ -753,13 +802,13 @@ void ProcessBootloader(void)
     buffer_exch[1] = 0xFF;
     UInt32ToBuff(buffer_exch + 2, USER_DATA_LENGHT / FLASH_SECTOR_SIZE);
     UInt32ToBuff(buffer_exch + 6, block);
-    binex_transmitter_init(buffer_exch, 10);
+    binex_transmitter_init(&binex, buffer_exch, 10);
     state = STATE_SEND_EVENT_USER_DATA_CLEAR;
   }
   break;
     /*********************************************/
   case STATE_SEND_EVENT_USER_DATA_CLEAR:
-    if (binex_transmit() == BINEX_PACK_TX)
+    if (binex_transmit(&binex) == BINEX_PACK_TX)
       state = STATE_SEND_EVENT_USER_DATA_CLEAR_1;
     break;
   /*********************************************/
@@ -769,6 +818,16 @@ void ProcessBootloader(void)
     break;
 #endif
   /*********************************************/
+#ifdef BOOTLOADER_USE_PROXY
+  case STATE_PROXY_SEND:
+    if (binex_transmit(&binex) == BINEX_PACK_TX)
+    {
+      BootloaderProxyResponseSent();
+      state = STATE_RX_WAIT;
+    }
+    break;
+  /*********************************************/
+#endif
   case STATE_SEND_RESP:
     if (entry)
     {
@@ -782,7 +841,7 @@ void ProcessBootloader(void)
     break;
   /*********************************************/
   case STATE_SEND_RESP_1:
-    if (binex_transmit() == BINEX_PACK_TX)
+    if (binex_transmit(&binex) == BINEX_PACK_TX)
       state = STATE_MAIN;
     break;
   /*********************************************/
@@ -799,7 +858,7 @@ void ProcessBootloader(void)
     break;
   /*********************************************/
   case STATE_APP_RUN_1:
-    if (binex_transmit() == BINEX_PACK_TX)
+    if (binex_transmit(&binex) == BINEX_PACK_TX)
     {
       state = STATE_APP_RUN_2;
     }
@@ -825,7 +884,7 @@ void ProcessBootloader(void)
   }
 }
 
-int binex_tx_callback(uint8_t c)
+static int bootloader_tx_callback(uint8_t c)
 {
   int16_t ret = port_serial_putc(c);
   if (ret == c)

@@ -86,48 +86,55 @@ typedef enum
 } BinexTxStatus_t;
 
 
-//Буфер приемника, его размер равен BINEX_BUFFER_SIZE
-extern uint8_t binex_receive_buffer[];
+/* Состояние одного канала. Буферы предоставляет вызывающий код.
+   Каждый экземпляр обслуживается последовательно, без одновременных
+   вызовов из основного цикла и прерывания. */
+typedef struct
+{
+  uint8_t *receive_buffer;
+  size_t receive_buffer_size;
+  uint8_t *txbuff;
+  int (*tx_callback)(uint8_t c);
 
-// Инициализация конечного автомата приемника
-void binex_receiver_begin(uint8_t *buff, size_t buff_size);
+  uint16_t rxpack_size;
+  uint16_t rx_tmp;
+  uint16_t txpack_size;
+  uint16_t tx_tmp;
+#ifdef BINEX_CHECK_CRC
+  uint16_t tx_crc16;
+#endif
+  uint8_t rxstate;
+  uint8_t flag_prev_rx_esc;
+  uint8_t txstate;
+  uint8_t flag_prev_tx_esc;
+} Binex_t;
 
-// Эту фунцию надо вызывать для каждого символа
-// входного потока. Как только будет задетектирован 
-// корректный пакет, функция возвратит BINEX_PACK_RX
-// Если функция задетектировала поврежденный пакет, то
-// будет возвращено BINEX_PACK_BROKEN.
-// Длину полученного пакета можно получить с помощью
-// функции binex_get_rxpack_len. Принятые данные будут
-// находиться в буфере binex_receive_buffer 
-BinexRxStatus_t binex_receiver(int16_t c);
+/* Инициализация экземпляра. При включённом CRC перед началом обмена
+   один раз вызвать Crc16Init() для всех экземпляров.
+   tx_callback возвращает 1, если символ принят в выходной поток,
+   и 0, если поток заполнен: передача продолжится при следующем вызове.
+   Функция вывода закрепляется за экземпляром до следующего binex_init(). */
+void binex_init(Binex_t *binex, int (*tx_callback)(uint8_t c));
 
-//Получить длину принятого пакета
-uint16_t binex_get_rxpack_len(void);
+/* Начать приём в предоставленный буфер, сбросив незавершённый пакет.
+   Разные одновременно работающие приёмники используют разные буферы. */
+void binex_receiver_begin(Binex_t *binex, uint8_t *buff, size_t buff_size);
 
-// Инициализация процесса передачи буфера
-void binex_transmitter_init(void *buff, uint16_t size);
+/* Обработать очередной символ; отрицательное значение означает отсутствие
+   данных. После BINEX_PACK_RX payload находится в буфере, переданном
+   binex_receiver_begin(). До обработки следующего пакета его нужно прочитать. */
+BinexRxStatus_t binex_receiver(Binex_t *binex, int16_t c);
 
-// Сам процесс передачи буфера. Эту функцию 
-// нужно вызывать до тех пор, пока она не вернет
-// BINEX_PACK_TX. Если вывод выполняется в поток,
-// который не может переполниться, то будет достаточно
-// одного вызова этой функции. Если вывод выполняется в 
-// поток, который может переполниться (например, uart),
-// то функция возвратит BINEX_PACK_NOT_TX, и ее надо 
-// будет вызвать еще раз, через некоторое время
-BinexTxStatus_t binex_transmit(void);
+/* Длина принятого payload. */
+uint16_t binex_get_rxpack_len(const Binex_t *binex);
 
-// Call-back функция, через которую выполняется 
-// вывод данных в поток. Если в данный момент
-// поток не может принять очередной символ, то функция
-// должна возвратить 0. Это приведет к тому, что 
-// функция binex_transmit вернет BINEX_PACK_NOT_TX,
-// и binex_transmit нужно будет вызвать еще раз 
-// через некоторое время для продолжения процесса.
-// Если в данный момент поток может принять очередной символ,
-// то этот символ должен быть отправлен в поток,
-// а функция должна вернуть 1.
-extern int binex_tx_callback(uint8_t c);
+/* Начать передачу. Буфер должен оставаться доступным и неизменным
+   до получения BINEX_PACK_TX. Приём и передача одного экземпляра
+   могут обслуживаться независимо, если используют разные буферы. */
+void binex_transmitter_init(Binex_t *binex, void *buff, uint16_t size);
+
+/* Продолжать передачу до BINEX_PACK_TX. При заполнении выходного потока
+   возвращает BINEX_PACK_NOT_TX без ожидания его освобождения. */
+BinexTxStatus_t binex_transmit(Binex_t *binex);
 
 #endif
