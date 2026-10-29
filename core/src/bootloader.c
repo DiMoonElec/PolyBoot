@@ -19,6 +19,8 @@
 
 #define CHUNK_DATA_SIZE 128
 #define MAC_SIZE 16
+#define FIRMWARE_VERSION_SIZE 6
+#define DEVICE_ID_SIZE 32
 
 /******************************************************************************/
 
@@ -30,6 +32,8 @@
 #define CMD_CHECK_CRC 0x75
 #define CMD_APP_RUN 0x76
 #define CMD_ERASE_USER_DATA 0x78
+#define CMD_GET_FIRMWARE_VERSION 0x79
+#define CMD_GET_DEVICE_ID 0x7A
 
 /******************************************************************************/
 
@@ -96,6 +100,10 @@ static const uint8_t activate_data[] = {'A', 'C', 'T', 'I', 'V', 'A', 'T', 'E'};
 
 /* Ожидаемая строка устройства */
 static const uint8_t expected_device_id[CHUNK_DATA_SIZE] = BOOTLOADER_DEVICE_ID_STRING;
+
+/* Идентификатор должен целиком помещаться в ответ GET_DEVICE_ID. */
+_Static_assert(sizeof(BOOTLOADER_DEVICE_ID_STRING) - 1 <= DEVICE_ID_SIZE,
+               "BOOTLOADER_DEVICE_ID_STRING exceeds 32 bytes");
 
 /******************************************************************************/
 
@@ -467,6 +475,51 @@ static void __parsecmd(void)
     }
 
     binex_transmitter_init(buffer_exch, 2);
+    state = STATE_SEND_RESP;
+    break;
+  /////////////////////////////////////////
+  case CMD_GET_FIRMWARE_VERSION:
+    if ((flag_activated == 0) || (len != 1))
+    {
+      state = STATE_MAIN;
+      break;
+    }
+
+    buffer_exch[0] = CMD_GET_FIRMWARE_VERSION;
+
+    /* Перед каждым ответом проверяем весь образ, включая поле версии. */
+    if (__app_poly1305_check() != 0)
+    {
+      flag_firmware_valid = 0;
+      buffer_exch[1] = 0x01;
+      binex_transmitter_init(buffer_exch, 2);
+    }
+    else
+    {
+      /* Три uint16 LE хранятся непосредственно перед MAC. */
+      const uint8_t *version = (const uint8_t *)(
+          BOOTLOADER_APP_BEGIN + BOOTLOADER_APP_LENGTH - MAC_SIZE - FIRMWARE_VERSION_SIZE);
+
+      flag_firmware_valid = 1;
+      buffer_exch[1] = 0x00;
+      memcpy(buffer_exch + 2, version, FIRMWARE_VERSION_SIZE);
+      binex_transmitter_init(buffer_exch, 2 + FIRMWARE_VERSION_SIZE);
+    }
+
+    state = STATE_SEND_RESP;
+    break;
+  /////////////////////////////////////////
+  case CMD_GET_DEVICE_ID:
+    if ((flag_activated == 0) || (len != 1))
+    {
+      state = STATE_MAIN;
+      break;
+    }
+
+    buffer_exch[0] = CMD_GET_DEVICE_ID;
+    buffer_exch[1] = 0x00;
+    memcpy(buffer_exch + 2, expected_device_id, DEVICE_ID_SIZE);
+    binex_transmitter_init(buffer_exch, 2 + DEVICE_ID_SIZE);
     state = STATE_SEND_RESP;
     break;
   /////////////////////////////////////////
