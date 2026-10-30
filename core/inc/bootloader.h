@@ -2,6 +2,7 @@
 #define __BOOTLOADER_H__
 
 #include <stdint.h>
+#include "bootloader_project_config.h"
 
 /*
  * Ранний запуск приложения до InitBootloader() и настройки оборудования загрузчика.
@@ -12,6 +13,18 @@
  * При успешной проверке передаёт управление приложению и не возвращается.
  */
 void BootloaderTryRunApplication(void);
+
+#ifdef BOOTLOADER_TIMEOUT_MS
+/*
+ * Переопределяет тайм-аут ожидания активации в миллисекундах.
+ * Вызывать до InitBootloader(); последний вызов задаёт значение.
+ * Без вызова используется BOOTLOADER_TIMEOUT_MS. InitBootloader() сохраняет
+ * выбранное значение и начинает отсчёт заново.
+ * Значение 0 разрешает запуск исправного приложения без ожидания
+ * при обработке автомата загрузчика.
+ */
+void BootloaderSetActivationTimeout(uint32_t timeout_ms);
+#endif
 
 void InitBootloader(void);
 void ProcessBootloader(void);

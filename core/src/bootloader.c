@@ -100,6 +100,7 @@ static uint32_t timer;
 
 #ifdef BOOTLOADER_TIMEOUT_MS
 static uint32_t boot_timer;
+static uint32_t boot_timeout_ms = BOOTLOADER_TIMEOUT_MS;
 #endif
 
 static uint8_t buffer_exch[BUFFER_EXCH_SIZE];
@@ -603,6 +604,13 @@ void BootloaderTryRunApplication(void)
   port_application_run();
 }
 
+#ifdef BOOTLOADER_TIMEOUT_MS
+void BootloaderSetActivationTimeout(uint32_t timeout_ms)
+{
+  boot_timeout_ms = timeout_ms;
+}
+#endif
+
 void InitBootloader(void)
 {
   Crc16Init();
@@ -680,7 +688,7 @@ void ProcessBootloader(void)
 #ifdef BOOTLOADER_TIMEOUT_MS                                              /* Если Bootloader активируется по тайм-ауту */
     if ((!flag_activated)                                                 // Если Bootloader не был активирован командой
         && (flag_firmware_valid)                                          // и прошивка прошла проверку целостности
-        && ((SYSTICK_GET_VALUE() - boot_timer) >= BOOTLOADER_TIMEOUT_MS)) // и истек таймаут
+        && ((SYSTICK_GET_VALUE() - boot_timer) >= boot_timeout_ms))        // и истек таймаут
     {
       // Запускаем основную прошивку
       __app_run();
