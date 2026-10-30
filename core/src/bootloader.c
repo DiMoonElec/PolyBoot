@@ -595,6 +595,14 @@ static void __parsecmd(void)
 
 /******************************************************************************/
 
+void BootloaderTryRunApplication(void)
+{
+  if (__app_poly1305_check() != 0)
+    return;
+
+  port_application_run();
+}
+
 void InitBootloader(void)
 {
   Crc16Init();
